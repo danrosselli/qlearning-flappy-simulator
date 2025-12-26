@@ -40,15 +40,16 @@ export function setEpsilon(val) {
  * dx: Horizontal distance to next pipe center
  * dy: Vertical distance to next pipe center (birdY - pipeY)
  * ------------------------------------------------------------ */
-export function getStateKey(dx, dy) {
-  // Grid resolution
-  const distX = 20; // 50px buckets for X
-  const distY = 20; // 40px buckets for Y
 
+// Grid resolution
+export const DIST_X = 20; // 50px buckets for X
+export const DIST_Y = 20; // 40px buckets for Y
+
+export function getStateKey(dx, dy) {
   // Discretize
   // We limit the range to avoid infinite states, though in game bounds are fixed.
-  const x = Math.floor(dx / distX);
-  const y = Math.floor(dy / distY);
+  const x = Math.floor(dx / DIST_X);
+  const y = Math.floor(dy / DIST_Y);
 
   return `${x},${y}`;
 }
