@@ -98,17 +98,16 @@ export class Game extends Phaser.Scene {
 
 		// 1. Observar Estado
 		const closestPipe = this.getClosestPipe();
-		let dx, dy, velY;
+		let dx, dy, velY, gapHeight;
 		if (closestPipe) {
 			dx = closestPipe.x - this.bird.x;
 			dy = this.bird.y - closestPipe.body.center.y;
 			velY = this.bird.body.velocity.y;
+			gapHeight = closestPipe.height || 300;  // Default se null (use gap médio)
 		} else {
-			dx = 1000;
-			dy = 0;
-			velY = 0;
+			dx = 1000; dy = 0; velY = 0; gapHeight = 300;  // Default neutro
 		}
-		const currentState = [dx / 1000, dy / 400, velY / 1000];
+		const currentState = [dx / 1000, dy / 400, velY / 1000, gapHeight / 400];  // Novo: + gap norm ~[0.5,1.0]
 
 		// 2. Calcular Recompensa de Proximidade
 		if (closestPipe) {
@@ -117,7 +116,8 @@ export class Game extends Phaser.Scene {
 			const absDy = Math.abs(dy);
 			const scale = halfGap * 1.5;
 			const absDyNorm = absDy / scale;
-			this.proximityReward = 1.0 * Math.exp(-absDyNorm * 2) - 0.5;
+			const velPenalty = Math.min(0, -velY / 350) * 0.2;  // Penaliza queda rápida (-0.2 max)
+			this.proximityReward = (1.0 * Math.exp(-absDyNorm * 2) - 0.5) + velPenalty;
 			this.proximityReward = Math.max(this.proximityReward, -0.5);
 		} else {
 			this.proximityReward = 0;
@@ -144,7 +144,7 @@ export class Game extends Phaser.Scene {
 		let actionStr = "IDLE";
 		if (action === ACTION_FLAP) {
 			actionStr = "FLAP";
-			if (this.bird.body.velocity.y > -20) {
+			if (this.bird.body.velocity.y > -100) {
 				this.flap();
 			}
 		}
@@ -173,7 +173,7 @@ export class Game extends Phaser.Scene {
 			}
 		}
 
-		if (this.bird.y > this.scale.height || this.bird.y < 0) {
+		if (this.bird.y > this.scale.height + 50 || this.bird.y < -50) {
 			this.hitPipe();
 		}
 
@@ -186,11 +186,13 @@ export class Game extends Phaser.Scene {
 			`DX: ${Math.floor(dx)}\n` +
 			`DY: ${Math.floor(dy)}\n` +
 			`VelY: ${Math.floor(velY)}\n` +
+			`Gap: ${Math.floor(gapHeight)}\n` +
 			`Prox: ${this.proximityReward.toFixed(2)}\n` +
 			`Q-Idle: ${qValues[ACTION_IDLE].toFixed(2)}\n` +
 			`Q-Flap: ${qValues[ACTION_FLAP].toFixed(2)}\n` +
 			`Action: ${actionStr}`
 		);
+
 	}
 
 	flap() {
@@ -282,7 +284,7 @@ export class Game extends Phaser.Scene {
 				z.scored = true;
 				this.score++;
 				this.scoreText.setText('Score: ' + this.score);
-				this.bonusReward = 100;
+				this.bonusReward = 15;
 			}
 		});
 	}
@@ -291,15 +293,15 @@ export class Game extends Phaser.Scene {
 		if (this.gameOver) return;
 		this.gameOver = true;
 
-		const deathReward = -100;
+		const deathReward = -50;
 		if (this.lastState !== null && this.lastAction !== null) {
 			const reward = deathReward;
-			const currentState = this.lastState;
+			const terminalState = [0, 0, 0, 0];
 			this.agent.replayBuffer.add(
 				this.lastState,
 				this.lastAction,
 				reward,
-				currentState,
+				terminalState,
 				true
 			);
 			await this.agent.train();
@@ -307,7 +309,6 @@ export class Game extends Phaser.Scene {
 
 		this.highScore = Math.max(this.highScore, this.score);
 		this.generation++;
-		this.agent.decayEpsilon();
 		await this.agent.saveBrain(this.generation);
 
 		this.endGame();

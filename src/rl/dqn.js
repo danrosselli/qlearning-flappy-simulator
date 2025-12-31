@@ -18,13 +18,13 @@ export const ACTIONS = [ACTION_IDLE, ACTION_FLAP];
  * HYPERPARAMETERS
  * ------------------------------------------------------------ */
 export const gamma = 0.99; // Discount Factor
-export let epsilon = 0.1; // Exploration Rate
+export let epsilon = 0.5; // Exploration Rate
 export const EPSILON_MIN = 0.001;
-export const EPSILON_DECAY = 0.99;
+export const EPSILON_DECAY = 0.9995;
 export const BATCH_SIZE = 64;
-export const REPLAY_BUFFER_SIZE = 50000;
-export const TARGET_UPDATE_FREQ = 500;
-export const LEARNING_RATE = 0.001;
+export const REPLAY_BUFFER_SIZE = 30000;
+export const TARGET_UPDATE_FREQ = 500; // Atualiza target network com menos frequência
+export const LEARNING_RATE = 0.002; // Learning rate menor para convergência suave
 export const TRAIN_THROTTLE = 2; // Treina a cada N passos para evitar sobrecarga
 
 /* ------------------------------------------------------------
@@ -44,12 +44,82 @@ class ReplayBuffer {
     this.buffer.push(transition);
   }
 
-  sample(batchSize) {
+  sampleRandomBasic(batchSize) {
     const batch = [];
     for (let i = 0; i < batchSize; i++) {
       const idx = Math.floor(Math.random() * this.buffer.length);
       batch.push(this.buffer[idx]);
     }
+    return batch;
+  }
+
+  sampleLastPrioritizedAndRandom(batchSize) {
+    const batch = [];
+    const recentPercentage = 0.25;  // 25% do batchSize pra recentes (ajuste aqui: 0.25 pra 25%)
+    const numRecent = Math.floor(batchSize * recentPercentage);  // Dinâmico: ex: 128*0.25=32
+    const numRandom = batchSize - numRecent;  // Resto aleatório: ex: 128-32=96
+
+    // Parte 1: Últimas numRecent recentes (mais nova primeiro: reverse do tail)
+    const recentStart = Math.max(0, this.buffer.length - numRecent);
+    for (let i = this.buffer.length - 1; i >= recentStart; i--) {
+      batch.push(this.buffer[i]);  // Adiciona da mais nova pra mais antiga
+    }
+
+    // Parte 2: numRandom aleatórias do buffer TODO (com possível repetição, mas baixa chance)
+    if (numRandom > 0 && this.buffer.length > 0) {
+      for (let i = 0; i < numRandom; i++) {
+        const idx = Math.floor(Math.random() * this.buffer.length);
+        batch.push(this.buffer[idx]);
+      }
+    }
+
+    // Shuffle Opcional: Mistura o batch todo pra não enviesar o fit() (recomendado)
+    for (let i = batch.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [batch[i], batch[j]] = [batch[j], batch[i]];  // Swap simples
+    }
+
+    return batch;
+  }
+
+  sampleRewardPrioritized(batchSize) {
+    if (this.buffer.length === 0) return [];
+
+    const epsilon = 1.0;  // Adiciona pra evitar p=0 em rewards baixos
+    const absRewards = this.buffer.map(t => Math.abs(t.reward) + epsilon);  // |r| + ε
+    const total = absRewards.reduce((a, b) => a + b, 0);
+    const probs = absRewards.map(r => r / total);  // Normaliza pra [0,1]
+
+    // Cumsum pra weighted random (simples, sem binary search pra velocidade)
+    const cumsum = []; let sum = 0;
+    for (let p of probs) {
+      sum += p;
+      cumsum.push(sum);
+    }
+
+    const batch = [];
+    for (let i = 0; i < batchSize; i++) {
+      const rand = Math.random();
+      // Encontra idx via binary search (otimizado: O(log N) em vez de O(N))
+      let low = 0, high = cumsum.length - 1;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        if (cumsum[mid] >= rand) {
+          high = mid - 1;
+        } else {
+          low = mid + 1;
+        }
+      }
+      const idx = low;
+      batch.push(this.buffer[idx]);
+    }
+
+    // Shuffle opcional pra diversidade
+    for (let i = batch.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [batch[i], batch[j]] = [batch[j], batch[i]];
+    }
+
     return batch;
   }
 
@@ -75,22 +145,37 @@ export class DQNAgent {
 
   createModel() {
     const model = tf.sequential();
-    model.add(tf.layers.dense({ units: 64, activation: 'relu', inputShape: [3] }));
-    model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
-    model.add(tf.layers.dense({ units: 2, activation: 'linear' }));
+
+    model.add(tf.layers.dense({
+      units: 64,
+      activation: 'relu',
+      inputShape: [4]
+    }));
+
+    model.add(tf.layers.dense({
+      units: 32,
+      activation: 'relu'
+    }));
+
+    model.add(tf.layers.dense({
+      units: 2,
+      activation: 'linear'
+    }));
+
     model.compile({
       optimizer: tf.train.adam(LEARNING_RATE),
       loss: 'meanSquaredError'
     });
+
     return model;
   }
 
   async chooseAction(state) {
     if (Math.random() < epsilon) {
-      return Math.random() < 0.5 ? ACTION_FLAP : ACTION_IDLE;
+      return Math.random() < 0.2 ? ACTION_FLAP : ACTION_IDLE;
     }
     return tf.tidy(() => {
-      const stateTensor = tf.tensor2d([state], [1, 3]);
+      const stateTensor = tf.tensor2d([state], [1, 4]);
       const qValues = this.model.predict(stateTensor);
       const action = qValues.argMax(1).dataSync()[0];
       return action;
@@ -115,7 +200,8 @@ export class DQNAgent {
 
     this.trainingInProgress = true;
 
-    const batch = this.replayBuffer.sample(BATCH_SIZE);
+    const batch = this.replayBuffer.sampleLastPrioritizedAndRandom(BATCH_SIZE);
+
     const states = [];
     const actions = [];
     const rewards = [];
@@ -131,8 +217,8 @@ export class DQNAgent {
     });
 
     // Create input tensors
-    const stateTensor = tf.tensor2d(states, [BATCH_SIZE, 3]);
-    const nextStateTensor = tf.tensor2d(nextStates, [BATCH_SIZE, 3]);
+    const stateTensor = tf.tensor2d(states, [BATCH_SIZE, 4]);
+    const nextStateTensor = tf.tensor2d(nextStates, [BATCH_SIZE, 4]);
     const rewardTensor = tf.tensor1d(rewards);
     const doneTensor = tf.tensor1d(dones);
 
@@ -163,6 +249,8 @@ export class DQNAgent {
         batchSize: BATCH_SIZE,
         verbose: 0
       });
+
+      this.decayEpsilon();
 
       targets.dispose();
       stateTensor.dispose();
@@ -226,7 +314,7 @@ export class DQNAgent {
 
   getQValues(state) {
     return tf.tidy(() => {
-      const stateTensor = tf.tensor2d([state], [1, 3]);
+      const stateTensor = tf.tensor2d([state], [1, 4]);
       const qValues = this.model.predict(stateTensor);
       const qArray = qValues.dataSync();
       return { [ACTION_IDLE]: qArray[0], [ACTION_FLAP]: qArray[1] };
