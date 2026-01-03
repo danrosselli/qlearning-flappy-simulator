@@ -98,26 +98,55 @@ export class Game extends Phaser.Scene {
 
 		// 1. Observar Estado
 		const closestPipe = this.getClosestPipe();
-		let dx, dy, velY, gapHeight;
-		if (closestPipe) {
-			dx = closestPipe.x - this.bird.x;
-			dy = this.bird.y - closestPipe.body.center.y;
-			velY = this.bird.body.velocity.y;
-			gapHeight = closestPipe.height || 300;  // Default se null (use gap médio)
-		} else {
-			dx = 1000; dy = 0; velY = 0; gapHeight = 300;  // Default neutro
+		const pipesAhead = this.zones.filter(zone => zone.active && zone.x > this.bird.x)
+			.sort((a, b) => a.x - b.x);  // Ordena por proximidade (trailing edge)
+
+		let dx = 1058, dy = 0, velY = this.bird.body.velocity.y, gapHeight = 300,
+			dxNext = 1058, dyNext = 0, gapNext = 300;
+
+		if (pipesAhead.length > 0) {
+			const current = pipesAhead[0];
+			dx = current.x - this.bird.x;
+			dx = Math.max(0, dx);  // Clipa para 0 após passar o trailing edge
+			dy = this.bird.y - current.body.center.y;
+			gapHeight = current.height;
+
+			if (pipesAhead.length > 1) {
+				const next = pipesAhead[1];
+				dxNext = next.x - this.bird.x;
+				dxNext = Math.max(0, dxNext);
+				dyNext = this.bird.y - next.body.center.y;
+				gapNext = next.height;
+			}
 		}
-		const currentState = [dx / 1000, dy / 400, velY / 1000, gapHeight / 400];  // Novo: + gap norm ~[0.5,1.0]
+
+		const currentState = [
+			dx / 1058,
+			dy / 400,
+			velY / 1000,
+			gapHeight / 400,
+			dxNext / 1058,
+			dyNext / 400,
+			gapNext / 400
+		];
 
 		// 2. Calcular Recompensa de Proximidade
+
+		// Recompensa de progresso (viva mais = avance mais) — evite negativos
+		const progressReward = Math.max(0, dx / 1058) * 0.1;
+
+		// Penalidade por velocidade vertical extrema (evita loops loucos) — sempre calculada
+		const velPenalty = Math.abs(velY) > 600 ? -0.2 : 0;
+
 		if (closestPipe) {
 			const gap = closestPipe.height;
 			const halfGap = gap / 2;
 			const absDy = Math.abs(dy);
 			const scale = halfGap * 1.5;
 			const absDyNorm = absDy / scale;
-			const velPenalty = Math.min(0, -velY / 350) * 0.2;  // Penaliza queda rápida (-0.2 max)
-			this.proximityReward = (1.0 * Math.exp(-absDyNorm * 2) - 0.5) + velPenalty;
+
+			// Recompensa de proximidade (SEM velPenalty aqui, pra evitar dupla adição)
+			this.proximityReward = 1.0 * Math.exp(-absDyNorm * 2) - 0.5;
 			this.proximityReward = Math.max(this.proximityReward, -0.5);
 		} else {
 			this.proximityReward = 0;
@@ -125,7 +154,9 @@ export class Game extends Phaser.Scene {
 
 		// 3. Armazenar Transição
 		if (this.lastState !== null && this.lastAction !== null) {
-			const reward = 1 + this.bonusReward + this.proximityReward;
+			// Reward total — agora com velPenalty só uma vez
+			const reward = 1 + this.bonusReward + this.proximityReward + progressReward + velPenalty;
+
 			this.agent.replayBuffer.add(
 				this.lastState,
 				this.lastAction,
@@ -187,6 +218,9 @@ export class Game extends Phaser.Scene {
 			`DY: ${Math.floor(dy)}\n` +
 			`VelY: ${Math.floor(velY)}\n` +
 			`Gap: ${Math.floor(gapHeight)}\n` +
+			`DXNext: ${Math.floor(dxNext)}\n` +
+			`DYNext: ${Math.floor(dyNext)}\n` +
+			`GapNext: ${Math.floor(gapNext)}\n` +
 			`Prox: ${this.proximityReward.toFixed(2)}\n` +
 			`Q-Idle: ${qValues[ACTION_IDLE].toFixed(2)}\n` +
 			`Q-Flap: ${qValues[ACTION_FLAP].toFixed(2)}\n` +
@@ -208,7 +242,7 @@ export class Game extends Phaser.Scene {
 		if (!this.zones) return null;
 
 		this.zones.forEach(zone => {
-			if (zone.active && (zone.x + zone.width / 2) > (this.bird.x)) {
+			if (zone.active && zone.x > this.bird.x) {
 				const dist = zone.x - this.bird.x;
 				if (dist < minDist) {
 					minDist = dist;
@@ -264,17 +298,19 @@ export class Game extends Phaser.Scene {
 			bottomBody.setOrigin(0.5, 0.5);
 			this.physics.add.existing(bottomBody);
 			bottomBody.body.setAllowGravity(false);
-			topBody.body.setImmovable(true);
+			bottomBody.body.setImmovable(true);
 			bottomBody.body.setVelocityX(-200);
 			bottomBody.setVisible(false);
 			this.pipes.add(bottomBody);
 		}
 
-		const zone = this.add.zone(x + top.displayWidth / 2, centerY, 2, gap);
+		// Zone movida para o final do cano (borda trailing / direita, x + 104)
+		const zone = this.add.zone(x + 104, centerY, 2, gap);
 		this.physics.world.enable(zone);
 		zone.body.setVelocityX(-200);
 		zone.body.allowGravity = false;
 		zone.scored = false;
+		zone.active = true;
 
 		if (!this.zones) this.zones = [];
 		this.zones.push(zone);
@@ -296,7 +332,7 @@ export class Game extends Phaser.Scene {
 		const deathReward = -50;
 		if (this.lastState !== null && this.lastAction !== null) {
 			const reward = deathReward;
-			const terminalState = [0, 0, 0, 0];
+			const terminalState = [0, 0, 0, 0, 0, 0, 0];
 			this.agent.replayBuffer.add(
 				this.lastState,
 				this.lastAction,

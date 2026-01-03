@@ -146,21 +146,10 @@ export class DQNAgent {
   createModel() {
     const model = tf.sequential();
 
-    model.add(tf.layers.dense({
-      units: 64,
-      activation: 'relu',
-      inputShape: [4]
-    }));
-
-    model.add(tf.layers.dense({
-      units: 32,
-      activation: 'relu'
-    }));
-
-    model.add(tf.layers.dense({
-      units: 2,
-      activation: 'linear'
-    }));
+    model.add(tf.layers.dense({ units: 256, activation: 'relu', inputShape: [7] }));
+    model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
+    model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
+    model.add(tf.layers.dense({ units: 2, activation: 'linear' }));
 
     model.compile({
       optimizer: tf.train.adam(LEARNING_RATE),
@@ -175,7 +164,7 @@ export class DQNAgent {
       return Math.random() < 0.2 ? ACTION_FLAP : ACTION_IDLE;
     }
     return tf.tidy(() => {
-      const stateTensor = tf.tensor2d([state], [1, 4]);
+      const stateTensor = tf.tensor2d([state], [1, 7]);
       const qValues = this.model.predict(stateTensor);
       const action = qValues.argMax(1).dataSync()[0];
       return action;
@@ -217,8 +206,8 @@ export class DQNAgent {
     });
 
     // Create input tensors
-    const stateTensor = tf.tensor2d(states, [BATCH_SIZE, 4]);
-    const nextStateTensor = tf.tensor2d(nextStates, [BATCH_SIZE, 4]);
+    const stateTensor = tf.tensor2d(states, [BATCH_SIZE, 7]);
+    const nextStateTensor = tf.tensor2d(nextStates, [BATCH_SIZE, 7]);
     const rewardTensor = tf.tensor1d(rewards);
     const doneTensor = tf.tensor1d(dones);
 
@@ -314,7 +303,7 @@ export class DQNAgent {
 
   getQValues(state) {
     return tf.tidy(() => {
-      const stateTensor = tf.tensor2d([state], [1, 4]);
+      const stateTensor = tf.tensor2d([state], [1, 7]);
       const qValues = this.model.predict(stateTensor);
       const qArray = qValues.dataSync();
       return { [ACTION_IDLE]: qArray[0], [ACTION_FLAP]: qArray[1] };
